@@ -34,6 +34,7 @@ def parser():
     root.add_argument("-y", "--yolo", action="store_true", help="use the harness native unattended mode")
     root.add_argument("-C", "--cwd", type=Path, help="run in this working directory")
     root.add_argument("--provider", choices=tuple(PROVIDERS), help="run through a Harness Link provider")
+    root.add_argument("--fallback", choices=tuple(PROVIDERS), help="fallback provider if the primary provider fails")
     return root
 
 
@@ -96,13 +97,15 @@ def run_native(harness, args):
     os.execvpe(executable, [executable, *args], os.environ.copy())
 
 
-def run_provider(provider, harness, model, args):
+def run_provider(provider, harness, model, args, fallback=None):
     if harness not in PROVIDER_HARNESSES:
         print(f"hlink: {harness} does not support --provider", file=sys.stderr)
         raise SystemExit(2)
     argv = [provider, harness]
     if model:
         argv.extend(["--model", model])
+    if fallback:
+        argv.extend(["--fallback", fallback])
     if args:
         argv.extend(["--", *args])
     provider_cli.main(argv)
@@ -122,9 +125,13 @@ def main(argv=None):
             print(f"hlink: cannot use working directory {args.cwd}: {exc}", file=sys.stderr)
             raise SystemExit(2)
 
+    if args.fallback and not args.provider:
+        print("hlink: --fallback requires --provider", file=sys.stderr)
+        raise SystemExit(2)
+
     if args.provider:
         forwarded = harness_args(harness, prompt=prompt, yolo=args.yolo, extra_args=extra_args)
-        run_provider(args.provider, harness, args.model, forwarded)
+        run_provider(args.provider, harness, args.model, forwarded, fallback=args.fallback)
         return
 
     forwarded = harness_args(

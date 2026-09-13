@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-keywords = ["coding-agents", "opencode", "codex", "claude-code", "albert", "nvidia-nim", "openrouter"]
+keywords = ["coding-agents", "opencode", "codex", "claude-code", "albert", "nvidia-nim", "inferx", "openrouter"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
@@ -36,9 +36,11 @@ hlink = "harness_link.entrypoints:hlink"
 harness-link-spawn = "harness_link.entrypoints:harness_link_spawn"
 albert = "harness_link.entrypoints:albert"
 nim = "harness_link.entrypoints:nim"
+inferx = "harness_link.entrypoints:inferx"
 orfree = "harness_link.entrypoints:orfree"
 albert-spawn = "harness_link.entrypoints:albert_spawn"
 nim-spawn = "harness_link.entrypoints:nim_spawn"
+inferx-spawn = "harness_link.entrypoints:inferx_spawn"
 orfree-spawn = "harness_link.entrypoints:orfree_spawn"
 
 [tool.setuptools.dynamic]

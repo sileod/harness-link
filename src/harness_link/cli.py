@@ -16,6 +16,8 @@ from .providers import PROVIDERS, Provider, fetch_free_models, require_key, reso
 
 
 MODEL_COMMANDS = {"opencode", "hermes", "codex", "claude", "mini"}
+FALLBACK_PRIMARY_MODEL = "harness-link-primary"
+FALLBACK_SECONDARY_MODEL = "harness-link-fallback"
 
 
 def die(provider: Provider, message: str, code: int = 1):
@@ -23,9 +25,9 @@ def die(provider: Provider, message: str, code: int = 1):
     raise SystemExit(code)
 
 
-def provider_key(provider: Provider) -> str:
+def provider_key(provider: Provider, prompt: bool = False) -> str:
     try:
-        return require_key(provider)
+        return require_key(provider, prompt=prompt)
     except RuntimeError as exc:
         die(provider, str(exc))
 
@@ -83,7 +85,7 @@ def cmd_opencode(provider: Provider, args):
     env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
         opencode_config(provider, args.model, existing), separators=(",", ":")
     )
-    os.execvpe(executable, [executable, *args.harness_args], env)
+    raise SystemExit(subprocess.call([executable, *args.harness_args], env=env))
 
 
 def cmd_hermes(provider: Provider, args):
@@ -97,7 +99,7 @@ def cmd_hermes(provider: Provider, args):
             "LLM_MODEL": args.model,
         }
     )
-    os.execvpe(executable, [executable, *args.harness_args], env)
+    raise SystemExit(subprocess.call([executable, *args.harness_args], env=env))
 
 
 def mini_config(provider: Provider, model: str) -> str:
@@ -164,20 +166,40 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def litellm_config(provider: Provider, model: str) -> str:
-    model_name = json.dumps(model)
-    route_model = json.dumps(f"openai/{model}")
-    api_base = json.dumps(provider.base_url)
+def _litellm_model_entry(name: str, provider: Provider, model: str) -> str:
+    return (
+        f"  - model_name: {json.dumps(name)}\n"
+        "    litellm_params:\n"
+        f"      model: {json.dumps('openai/' + model)}\n"
+        f"      api_base: {json.dumps(provider.base_url)}\n"
+        f"      api_key: os.environ/{provider.key_env}\n"
+        "      use_chat_completions_api: true\n"
+    )
+
+
+def litellm_config(
+    provider: Provider,
+    model: str,
+    fallback: Provider = None,
+    fallback_model: str = None,
+) -> str:
+    if fallback is None:
+        return (
+            "litellm_settings:\n"
+            "  drop_params: true\n"
+            "model_list:\n"
+            + _litellm_model_entry(model, provider, model)
+        )
     return (
         "litellm_settings:\n"
         "  drop_params: true\n"
+        "router_settings:\n"
+        "  num_retries: 0\n"
+        "  fallbacks:\n"
+        f"    - {json.dumps(FALLBACK_PRIMARY_MODEL)}: [{json.dumps(FALLBACK_SECONDARY_MODEL)}]\n"
         "model_list:\n"
-        f"  - model_name: {model_name}\n"
-        "    litellm_params:\n"
-        f"      model: {route_model}\n"
-        f"      api_base: {api_base}\n"
-        f"      api_key: os.environ/{provider.key_env}\n"
-        "      use_chat_completions_api: true\n"
+        + _litellm_model_entry(FALLBACK_PRIMARY_MODEL, provider, model)
+        + _litellm_model_entry(FALLBACK_SECONDARY_MODEL, fallback, fallback_model)
     )
 
 
@@ -206,15 +228,19 @@ def wait_for_bridge(provider: Provider, process, port: int, timeout=None):
         time.sleep(0.15)
     if process.poll() is None:
         process.terminate()
-    die(
-        provider,
-        "LiteLLM bridge did not become HTTP-ready. "
-        f"Set {provider.debug_env}=1 for logs or use opencode/hermes/mini, which connect directly.",
-    )
+    die(provider, f"LiteLLM bridge did not become HTTP-ready; set {provider.debug_env}=1 for logs")
 
 
-def run_with_bridge(provider: Provider, model: str, callback):
+def run_with_bridge(
+    provider: Provider,
+    model: str,
+    callback,
+    fallback: Provider = None,
+    fallback_model: str = None,
+):
     provider_key(provider)
+    if fallback is not None:
+        provider_key(fallback, prompt=True)
     litellm = require_command(
         provider,
         "litellm",
@@ -223,7 +249,10 @@ def run_with_bridge(provider: Provider, model: str, callback):
     port = free_port()
     with tempfile.TemporaryDirectory(prefix=f"harness-link-{provider.slug}-") as tmp:
         config_path = Path(tmp) / "litellm.yaml"
-        config_path.write_text(litellm_config(provider, model), encoding="utf-8")
+        config_path.write_text(
+            litellm_config(provider, model, fallback=fallback, fallback_model=fallback_model),
+            encoding="utf-8",
+        )
         debug = os.environ.get(provider.debug_env) == "1"
         stdio = {} if debug else {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
         bridge_env = os.environ.copy()
@@ -233,9 +262,10 @@ def run_with_bridge(provider: Provider, model: str, callback):
             env=bridge_env,
             **stdio,
         )
+        routed_model = FALLBACK_PRIMARY_MODEL if fallback is not None else model
         try:
             wait_for_bridge(provider, process, port)
-            return callback(port)
+            return callback(port, routed_model)
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -272,7 +302,7 @@ def cmd_codex(provider: Provider, args):
         ]
         raise SystemExit(subprocess.call(command, env=env))
 
-    def launch(port):
+    def launch(port, routed_model):
         proxy_env = f"HARNESS_LINK_{provider.slug.upper()}_PROXY_KEY"
         config = _codex_provider_config(provider, f"http://127.0.0.1:{port}/v1", proxy_env)
         env = os.environ.copy()
@@ -283,7 +313,7 @@ def cmd_codex(provider: Provider, args):
             "-c",
             f'model_provider="{provider.slug}"',
             "-c",
-            f'model="{args.model}"',
+            f'model="{routed_model}"',
             "-c",
             f"model_providers.{provider.slug}={config}",
             *args.harness_args,
@@ -318,14 +348,67 @@ def cmd_claude(provider: Provider, args):
         env = _claude_env(provider, args.model, base, key)
         raise SystemExit(subprocess.call([executable, "--model", args.model, *args.harness_args], env=env))
 
-    def launch(port):
-        env = _claude_env(provider, args.model, f"http://127.0.0.1:{port}", "local")
+    def launch(port, routed_model):
+        env = _claude_env(provider, routed_model, f"http://127.0.0.1:{port}", "local")
         env.pop(provider.key_env, None)
-        return subprocess.call([executable, "--model", args.model, *args.harness_args], env=env)
+        return subprocess.call([executable, "--model", routed_model, *args.harness_args], env=env)
 
     if provider.claude_experimental:
         print(f"{provider.slug}: Claude Code bridge is experimental", file=sys.stderr)
     raise SystemExit(run_with_bridge(provider, args.model, launch))
+
+
+def _fallback_proxy_provider(provider: Provider, fallback: Provider, port: int) -> Provider:
+    return Provider(
+        slug=provider.slug,
+        name=f"{provider.name} with {fallback.name} fallback",
+        key_env="HARNESS_LINK_PROXY_KEY",
+        base_env="HARNESS_LINK_PROXY_BASE_URL",
+        default_base=f"http://127.0.0.1:{port}/v1",
+        model_env=provider.model_env,
+        default_model=FALLBACK_PRIMARY_MODEL,
+        debug_env=provider.debug_env,
+        spawn_ref_env=provider.spawn_ref_env,
+        direct_responses=True,
+        direct_messages=True,
+        anthropic_base=f"http://127.0.0.1:{port}",
+    )
+
+
+def run_with_fallback(provider: Provider, args):
+    fallback = PROVIDERS[args.fallback]
+    if fallback.slug == provider.slug:
+        die(provider, "fallback provider must differ from the primary provider")
+    try:
+        fallback_model = resolve_model(fallback)
+    except (RuntimeError, ValueError) as exc:
+        die(fallback, str(exc))
+    print(
+        f"{provider.slug}: fallback enabled: {args.model} -> {fallback.slug}/{fallback_model}",
+        file=sys.stderr,
+    )
+
+    def launch(port, routed_model):
+        proxy = _fallback_proxy_provider(provider, fallback, port)
+        os.environ[proxy.key_env] = "local"
+        os.environ[proxy.base_env] = proxy.default_base
+        saved_keys = {name: os.environ.pop(name, None) for name in {provider.key_env, fallback.key_env}}
+        args.model = routed_model
+        args.fallback = None
+        try:
+            return args.func(proxy, args)
+        finally:
+            for name, value in saved_keys.items():
+                if value is not None:
+                    os.environ[name] = value
+
+    return run_with_bridge(
+        provider,
+        args.model,
+        launch,
+        fallback=fallback,
+        fallback_model=fallback_model,
+    )
 
 
 def cmd_models(provider: Provider, _args):
@@ -395,6 +478,7 @@ def parser(provider: Provider):
     for name, handler, help_text in commands:
         command = sub.add_parser(name, help=help_text)
         command.add_argument("-m", "--model", default=None)
+        command.add_argument("--fallback", choices=tuple(PROVIDERS), default=None)
         command.set_defaults(func=handler)
 
     models = sub.add_parser("models", help=f"List model IDs returned by {provider.name}")
@@ -428,6 +512,9 @@ def main(argv=None):
             die(provider, str(exc))
         if auto:
             print(f"{provider.slug}: using {args.model}", file=sys.stderr)
+        if args.fallback:
+            run_with_fallback(provider, args)
+            return
     args.func(provider, args)
 
 

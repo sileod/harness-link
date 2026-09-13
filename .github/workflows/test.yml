@@ -16,10 +16,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: PYTHONPATH=src python -m unittest discover -s tests -v
-      - run: python -m py_compile src/harness_link/*.py bin/harness-link bin/hlink bin/harness-link-spawn bin/albert bin/albert-spawn bin/nim bin/nim-spawn bin/orfree bin/orfree-spawn
+      - run: python -m py_compile src/harness_link/*.py bin/harness-link bin/hlink bin/harness-link-spawn bin/albert bin/albert-spawn bin/nim bin/nim-spawn bin/inferx bin/inferx-spawn bin/orfree bin/orfree-spawn
       - run: bash -n install.sh
       - run: grep -q 'raw.githubusercontent.com/sileod/harness-link/main' install.sh
-      - run: PYTHONPATH=src python bin/harness-link --version && PYTHONPATH=src python bin/hlink --version && PYTHONPATH=src python bin/albert --version && PYTHONPATH=src python bin/nim --version && PYTHONPATH=src python bin/orfree --version
+      - run: PYTHONPATH=src python bin/harness-link --version && PYTHONPATH=src python bin/hlink --version && PYTHONPATH=src python bin/albert --version && PYTHONPATH=src python bin/nim --version && PYTHONPATH=src python bin/inferx --version && PYTHONPATH=src python bin/orfree --version
 
   package:
     runs-on: ubuntu-latest
@@ -37,6 +37,7 @@ jobs:
           /tmp/harness-link-wheel/bin/hlink --version
           /tmp/harness-link-wheel/bin/albert --version
           /tmp/harness-link-wheel/bin/nim --version
+          /tmp/harness-link-wheel/bin/inferx --version
           /tmp/harness-link-wheel/bin/orfree --version
           /tmp/harness-link-wheel/bin/harness-link-spawn --version
 

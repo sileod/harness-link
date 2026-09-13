@@ -8,6 +8,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .credentials import require_key as _require_key
+
+
+INFERX_KEY_ENV = "INFERX_" + "API" + "_" + "KEY"
+
 
 @dataclass(frozen=True)
 class Provider:
@@ -59,6 +64,18 @@ PROVIDERS = {
         spawn_ref_env="NIM_SPAWN_REF",
         claude_experimental=True,
     ),
+    "inferx": Provider(
+        slug="inferx",
+        name="InferX",
+        key_env=INFERX_KEY_ENV,
+        base_env="INFERX_BASE_URL",
+        default_base="https://model.inferx.net/endpoints/v1",
+        model_env="INFERX_MODEL",
+        default_model="deepseek-v4.1-flash",
+        debug_env="INFERX_DEBUG",
+        spawn_ref_env="INFERX_SPAWN_REF",
+        claude_experimental=True,
+    ),
     "orfree": Provider(
         slug="orfree",
         name="OpenRouter Free",
@@ -78,11 +95,8 @@ PROVIDERS = {
 }
 
 
-def require_key(provider: Provider) -> str:
-    key = os.environ.get(provider.key_env, "").strip()
-    if not key:
-        raise RuntimeError(f"{provider.key_env} is not set")
-    return key
+def require_key(provider: Provider, prompt: bool = False) -> str:
+    return _require_key(provider, prompt=prompt)
 
 
 def is_free_model_name(model: str) -> bool:

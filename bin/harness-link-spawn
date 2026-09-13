@@ -3,11 +3,11 @@ from pathlib import Path
 import sys
 
 try:
-    from harness_link.spawn import main
+    from harness_link.entrypoints import harness_link_spawn
 except ModuleNotFoundError:
     source = Path(__file__).resolve().parents[1] / "src"
     if source.is_dir():
         sys.path.insert(0, str(source))
-    from harness_link.spawn import main
+    from harness_link.entrypoints import harness_link_spawn
 
-main()
+harness_link_spawn()
