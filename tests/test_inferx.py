@@ -81,13 +81,13 @@ class InferxHarnessTests(TestCase):
         self.assertIn('"harness-link-primary": ["harness-link-fallback"]', config)
 
     def test_codex_bridge_uses_local_credentials_and_endpoint(self):
-        args = SimpleNamespace(model=self.provider.default_model, harness_args=["--help"])
+        args = SimpleNamespace(model=self.provider.default_model, harness_args=["--help"], show_routing=False)
         with patch.object(cli, "provider_key"), patch.object(
             cli, "require_command", return_value="/usr/bin/codex"
         ), patch.object(cli, "run_with_bridge") as bridge, patch.object(
             cli.subprocess, "call", return_value=0
         ) as call:
-            bridge.side_effect = lambda provider, model, callback: callback(43123, model)
+            bridge.side_effect = lambda provider, model, callback, **kwargs: callback(43123, model)
             with patch.dict(os.environ, {self.provider.key_env: "inferx-secret"}, clear=False):
                 with self.assertRaises(SystemExit):
                     cli.cmd_codex(self.provider, args)
@@ -99,13 +99,13 @@ class InferxHarnessTests(TestCase):
         self.assertNotIn(self.provider.key_env, child_env)
 
     def test_claude_bridge_uses_local_credentials_and_endpoint(self):
-        args = SimpleNamespace(model=self.provider.default_model, harness_args=["--help"])
+        args = SimpleNamespace(model=self.provider.default_model, harness_args=["--help"], show_routing=False)
         with patch.object(cli, "provider_key"), patch.object(
             cli, "require_command", return_value="/usr/bin/claude"
         ), patch.object(cli, "run_with_bridge") as bridge, patch.object(
             cli.subprocess, "call", return_value=0
         ) as call:
-            bridge.side_effect = lambda provider, model, callback: callback(43124, model)
+            bridge.side_effect = lambda provider, model, callback, **kwargs: callback(43124, model)
             with patch.dict(os.environ, {self.provider.key_env: "inferx-secret"}, clear=False):
                 with self.assertRaises(SystemExit):
                     cli.cmd_claude(self.provider, args)

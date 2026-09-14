@@ -7,6 +7,7 @@ import sys
 from . import __version__
 from . import cli as provider_cli
 from .providers import PROVIDERS
+from .routing import show_route_status
 
 
 ALIASES = {
@@ -28,13 +29,14 @@ def parser():
         description="Run coding harnesses through one thin command-line interface",
     )
     root.add_argument("--version", action="version", version=f"hlink {__version__}")
-    root.add_argument("harness", choices=[*HARNESS_NAMES, *ALIASES])
+    root.add_argument("harness", choices=[*HARNESS_NAMES, *ALIASES, "status"])
     root.add_argument("-p", "--prompt", help='run one task and exit; use "-" to read stdin')
     root.add_argument("-m", "--model", help="override model")
     root.add_argument("-y", "--yolo", action="store_true", help="use the harness native unattended mode")
     root.add_argument("-C", "--cwd", type=Path, help="run in this working directory")
     root.add_argument("--provider", choices=tuple(PROVIDERS), help="run through a Harness Link provider")
     root.add_argument("--fallback", choices=tuple(PROVIDERS), help="fallback provider if the primary provider fails")
+    root.add_argument("--show-routing", action="store_true", help="show the actual routed model when it changes")
     return root
 
 
@@ -97,7 +99,7 @@ def run_native(harness, args):
     os.execvpe(executable, [executable, *args], os.environ.copy())
 
 
-def run_provider(provider, harness, model, args, fallback=None):
+def run_provider(provider, harness, model, args, fallback=None, show_routing=False):
     if harness not in PROVIDER_HARNESSES:
         print(f"hlink: {harness} does not support --provider", file=sys.stderr)
         raise SystemExit(2)
@@ -106,6 +108,8 @@ def run_provider(provider, harness, model, args, fallback=None):
         argv.extend(["--model", model])
     if fallback:
         argv.extend(["--fallback", fallback])
+    if show_routing:
+        argv.append("--show-routing")
     if args:
         argv.extend(["--", *args])
     provider_cli.main(argv)
@@ -114,7 +118,16 @@ def run_provider(provider, harness, model, args, fallback=None):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     normalized, extra_args = split_argv(argv)
-    args = parser().parse_args(normalized)
+    root = parser()
+    args = root.parse_args(normalized)
+
+    if args.harness == "status":
+        invalid = extra_args or args.prompt is not None or args.model or args.yolo or args.cwd or args.fallback or args.show_routing
+        if invalid:
+            root.error("status only accepts --provider")
+        show_route_status(args.provider)
+        return
+
     harness = canonical_harness(args.harness)
     prompt = resolve_prompt(args.prompt)
 
@@ -129,9 +142,20 @@ def main(argv=None):
         print("hlink: --fallback requires --provider", file=sys.stderr)
         raise SystemExit(2)
 
+    if args.show_routing and not args.provider:
+        print("hlink: --show-routing requires --provider", file=sys.stderr)
+        raise SystemExit(2)
+
     if args.provider:
         forwarded = harness_args(harness, prompt=prompt, yolo=args.yolo, extra_args=extra_args)
-        run_provider(args.provider, harness, args.model, forwarded, fallback=args.fallback)
+        run_provider(
+            args.provider,
+            harness,
+            args.model,
+            forwarded,
+            fallback=args.fallback,
+            show_routing=args.show_routing,
+        )
         return
 
     forwarded = harness_args(
