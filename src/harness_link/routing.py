@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 import sys
-import threading
+import time
 
 
 ROUTE_PREFIX = "HARNESS_LINK_ROUTE "
@@ -18,10 +18,9 @@ def route_id(provider, model):
     return f"{slug}/{model}"
 
 
-def route_status_path(provider, owner_pid=None):
+def route_status_path(provider):
     slug = provider.slug if hasattr(provider, "slug") else str(provider)
-    pid = os.getpid() if owner_pid is None else owner_pid
-    return _cache_root() / "harness-link" / "routes" / f"{slug}-{pid}.json"
+    return _cache_root() / "harness-link" / "routes" / f"{slug}.json"
 
 
 def read_route_status(path):
@@ -42,7 +41,7 @@ def write_route_status(path, route, primary):
         "model": model,
         "primary": primary,
         "fallback": bool(primary and route != primary),
-        "owner_pid": os.getpid(),
+        "updated_at": time.time(),
     }
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,32 +57,19 @@ def format_route_status(payload):
     return f"{route} (primary)"
 
 
-def start_route_monitor(path, primary, enabled=False, stream=None):
-    stop = threading.Event()
-    stream = sys.stderr if stream is None else stream
-
-    def monitor():
-        last = None
-        while not stop.wait(0.1):
-            payload = read_route_status(path)
-            if not payload:
-                continue
-            route = payload.get("route")
-            if route == last:
-                continue
-            label = "fallback" if payload.get("fallback") else "primary"
-            if enabled:
-                print(f"[hlink] {label} -> {route}", file=stream, flush=True)
-            last = route
-
-    thread = threading.Thread(target=monitor, name="harness-link-route", daemon=True)
-    thread.start()
-    return stop, thread
+def route_statuses(provider=None):
+    root = _cache_root() / "harness-link" / "routes"
+    paths = [route_status_path(provider)] if provider else sorted(root.glob("*.json"))
+    return [payload for path in paths if (payload := read_route_status(path))]
 
 
-def stop_route_monitor(handle):
-    if not handle:
-        return
-    stop, thread = handle
-    stop.set()
-    thread.join(timeout=0.5)
+def show_route_status(provider=None, stream=None):
+    stream = sys.stdout if stream is None else stream
+    statuses = route_statuses(provider)
+    if not statuses:
+        suffix = f" for {provider}" if provider else ""
+        print(f"hlink: no recorded route{suffix}", file=stream)
+        return False
+    for payload in statuses:
+        print(format_route_status(payload), file=stream)
+    return True
