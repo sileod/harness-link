@@ -72,6 +72,26 @@ nim hermes
 orfree mini
 ```
 
+## Quota
+
+`hlink quota` shows a boxed summary of the remaining subscription quota exposed by the installed harnesses, reusing their existing local authentication. Use `--json` for machine-readable output.
+
+```sh
+hlink quota
+hlink quota claude codex
+hlink quota antigravity opencode
+hlink quota --json
+```
+
+Current sources:
+
+- Claude: Claude Code/OpenCode OAuth and Anthropic's OAuth usage endpoint.
+- Codex: the installed Codex `app-server` `account/rateLimits/read` RPC, so Codex keeps ownership of its credential store.
+- Antigravity: the native `agy -p /usage --output-format json` command.
+- OpenCode: OpenCode Go's usage endpoint and, when present, the Zen Console session in OpenCode's local state database.
+
+No additional API keys are required. Missing or unauthenticated harnesses are reported as unavailable instead of preventing the other checks. OpenCode Zen's Console routes are not a stable public API and may change.
+
 ## Install
 
 From the repository:

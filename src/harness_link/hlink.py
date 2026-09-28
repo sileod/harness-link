@@ -28,7 +28,7 @@ def parser():
         description="Run coding harnesses through one thin command-line interface",
     )
     root.add_argument("--version", action="version", version=f"hlink {__version__}")
-    root.add_argument("harness", choices=[*HARNESS_NAMES, *ALIASES])
+    root.add_argument("harness", choices=[*HARNESS_NAMES, *ALIASES, "quota"])
     root.add_argument("-p", "--prompt", help='run one task and exit; use "-" to read stdin')
     root.add_argument("-m", "--model", help="override model")
     root.add_argument("-y", "--yolo", action="store_true", help="use the harness native unattended mode")
@@ -113,6 +113,10 @@ def run_provider(provider, harness, model, args, fallback=None):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "quota":
+        from . import quota
+
+        return quota.main(argv[1:])
     normalized, extra_args = split_argv(argv)
     args = parser().parse_args(normalized)
     harness = canonical_harness(args.harness)
