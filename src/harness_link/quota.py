@@ -467,13 +467,17 @@ def print_human(results, out=None):
 
 def parser():
     p = argparse.ArgumentParser(prog="hlink quota", description="Show remaining coding-agent subscription quota")
-    p.add_argument("providers", nargs="*", choices=[*PROVIDERS, *ALIASES])
+    p.add_argument("providers", nargs="*", metavar="PROVIDER")
     p.add_argument("--json", action="store_true", help="print machine-readable JSON")
     return p
 
 
 def main(argv=None):
-    args = parser().parse_args(argv)
+    p = parser()
+    args = p.parse_args(argv)
+    unknown = [name for name in args.providers if name not in PROVIDERS and name not in ALIASES]
+    if unknown:
+        p.error(f"unknown provider: {unknown[0]}")
     providers = [ALIASES.get(name, name) for name in args.providers] or list(PROVIDERS)
     providers = list(dict.fromkeys(providers))
     results = fetch(providers)
