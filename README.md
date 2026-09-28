@@ -86,7 +86,7 @@ hlink quota --json
 Current sources:
 
 - Claude: Claude Code/OpenCode OAuth and Anthropic's OAuth usage endpoint.
-- Codex: the installed Codex `app-server` `account/rateLimits/read` RPC, so Codex keeps ownership of its credential store.
+- Codex: the `account/rateLimits/read` RPC through a running Codex app-server daemon when available, otherwise a temporary installed Codex app-server. Codex keeps ownership of its credential store.
 - Antigravity: the native `agy -p /usage --output-format json` command.
 - OpenCode: OpenCode Go's usage endpoint and, when present, the Zen Console session in OpenCode's local state database.
 

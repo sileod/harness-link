@@ -1,11 +1,16 @@
 import argparse
+import base64
+import hashlib
 import json
 import os
 from pathlib import Path
 import platform
 import queue
+import secrets
 import shutil
+import socket
 import sqlite3
+import struct
 import subprocess
 import sys
 import threading
@@ -232,9 +237,103 @@ def _codex_app_server():
         process.stdout.close()
 
 
+def _codex_daemon_app_server():
+    home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    path = home / "app-server-control" / "app-server-control.sock"
+    if not path.exists():
+        raise RuntimeError("Codex daemon socket is unavailable")
+
+    def read_exact(connection, length):
+        data = b""
+        while len(data) < length:
+            chunk = connection.recv(length - len(data))
+            if not chunk:
+                raise RuntimeError("Codex daemon closed before responding")
+            data += chunk
+        return data
+
+    def send_frame(connection, opcode, payload):
+        mask = secrets.token_bytes(4)
+        length = len(payload)
+        if length < 126:
+            header = bytes((0x80 | opcode, 0x80 | length))
+        elif length < 65536:
+            header = bytes((0x80 | opcode, 0x80 | 126)) + struct.pack("!H", length)
+        else:
+            header = bytes((0x80 | opcode, 0x80 | 127)) + struct.pack("!Q", length)
+        connection.sendall(header + mask + bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload)))
+
+    def receive_frame(connection):
+        first, second = read_exact(connection, 2)
+        length = second & 0x7F
+        if length == 126:
+            length = struct.unpack("!H", read_exact(connection, 2))[0]
+        elif length == 127:
+            length = struct.unpack("!Q", read_exact(connection, 8))[0]
+        mask = read_exact(connection, 4) if second & 0x80 else None
+        payload = read_exact(connection, length)
+        if mask:
+            payload = bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload))
+        return first & 0x0F, payload
+
+    def send(connection, message):
+        send_frame(connection, 1, json.dumps(message).encode())
+
+    def receive(connection, message_id):
+        while True:
+            opcode, payload = receive_frame(connection)
+            if opcode == 9:
+                send_frame(connection, 10, payload)
+                continue
+            if opcode == 8:
+                raise RuntimeError("Codex daemon closed before responding")
+            if opcode != 1:
+                continue
+            message = json.loads(payload)
+            if message.get("id") != message_id:
+                continue
+            if "error" in message:
+                raise RuntimeError(message["error"].get("message", "Codex RPC error"))
+            return message.get("result", {})
+
+    try:
+        with socket.socket(socket.AF_UNIX) as connection:
+            connection.settimeout(12)
+            connection.connect(str(path))
+            key = base64.b64encode(secrets.token_bytes(16)).decode()
+            connection.sendall((
+                "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n"
+                "Connection: Upgrade\r\nSec-WebSocket-Key: " + key + "\r\n"
+                "Sec-WebSocket-Version: 13\r\n\r\n"
+            ).encode())
+            response = b""
+            while not response.endswith(b"\r\n\r\n"):
+                response += read_exact(connection, 1)
+                if len(response) > 8192:
+                    raise RuntimeError("invalid Codex daemon handshake")
+            expected = base64.b64encode(hashlib.sha1(
+                (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
+            ).digest())
+            if not response.startswith(b"HTTP/1.1 101 ") or b"Sec-WebSocket-Accept: " + expected not in response:
+                raise RuntimeError("Codex daemon rejected websocket handshake")
+            send(connection, {
+                "id": "init", "method": "initialize",
+                "params": {"clientInfo": {"name": "harness-link", "title": "Harness Link", "version": "0"}},
+            })
+            receive(connection, "init")
+            send(connection, {"method": "initialized", "params": {}})
+            send(connection, {"id": "quota", "method": "account/rateLimits/read", "params": {}})
+            return receive(connection, "quota")
+    except (OSError, socket.timeout, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Codex daemon: {exc}") from exc
+
+
 def quota_codex():
     try:
-        data = _codex_app_server()
+        try:
+            data = _codex_daemon_app_server()
+        except RuntimeError:
+            data = _codex_app_server()
         windows = _normalize_codex(data)
         if not windows:
             return {"ok": False, "error": "Codex returned no quota windows"}

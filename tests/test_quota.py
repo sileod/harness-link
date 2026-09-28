@@ -1,7 +1,15 @@
 import io
+import base64
+import hashlib
 import json
+import os
+import socket
+import struct
 import subprocess
 import sys
+import tempfile
+import threading
+from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -51,6 +59,63 @@ for line in sys.stdin:
         ):
             result = quota._codex_app_server()
         self.assertEqual(result["rateLimits"]["primary"]["usedPercent"], 25)
+
+    def test_codex_quota_uses_running_daemon_socket(self):
+        with tempfile.TemporaryDirectory() as home:
+            directory = Path(home) / "app-server-control"
+            directory.mkdir()
+            path = directory / "app-server-control.sock"
+            with socket.socket(socket.AF_UNIX) as listener:
+                listener.bind(str(path))
+                listener.listen(1)
+
+                def read_exact(connection, length):
+                    data = b""
+                    while len(data) < length:
+                        data += connection.recv(length - len(data))
+                    return data
+
+                def fake_daemon():
+                    with listener.accept()[0] as connection:
+                        request = b""
+                        while not request.endswith(b"\r\n\r\n"):
+                            request += connection.recv(1)
+                        key = request.split(b"Sec-WebSocket-Key: ", 1)[1].split(b"\r\n", 1)[0]
+                        accept = base64.b64encode(hashlib.sha1(
+                            key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+                        ).digest())
+                        connection.sendall(b"HTTP/1.1 101 Switching Protocols\r\n"
+                                           b"Sec-WebSocket-Accept: " + accept + b"\r\n\r\n")
+                        for _ in range(3):
+                            first, second = read_exact(connection, 2)
+                            self.assertEqual(first & 0x0F, 1)
+                            self.assertTrue(second & 0x80)
+                            length = second & 0x7F
+                            if length == 126:
+                                length = struct.unpack("!H", read_exact(connection, 2))[0]
+                            mask = read_exact(connection, 4)
+                            payload = read_exact(connection, length)
+                            message = json.loads(bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload)))
+                            if message.get("id") == "init":
+                                response = {"id": "init", "result": {}}
+                            elif message.get("id") == "quota":
+                                response = {"id": "quota", "result": {"rateLimits": {
+                                    "primary": {"usedPercent": 25, "windowDurationMins": 300}
+                                }}}
+                            else:
+                                continue
+                            encoded = json.dumps(response).encode()
+                            connection.sendall(bytes((0x81, len(encoded))) + encoded)
+
+                thread = threading.Thread(target=fake_daemon)
+                thread.start()
+                try:
+                    with patch.dict(os.environ, {"CODEX_HOME": home}):
+                        with patch.object(quota, "_codex_app_server", side_effect=AssertionError("should use daemon")):
+                            result = quota.quota_codex()
+                    self.assertEqual(result["windows"][0]["remaining"], 75)
+                finally:
+                    thread.join(timeout=2)
 
     def test_agy_windows_accept_snake_case(self):
         windows = quota._normalize_agy(
