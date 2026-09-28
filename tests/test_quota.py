@@ -2,7 +2,7 @@ import io
 from unittest import TestCase
 from unittest.mock import patch
 
-from harness_link import quota
+from harness_link import hlink, quota
 
 
 class QuotaTests(TestCase):
@@ -79,6 +79,11 @@ class QuotaTests(TestCase):
         text = out.getvalue()
         self.assertIn("73% left", text)
         self.assertIn("not logged in", text)
+
+    def test_hlink_dispatches_quota(self):
+        with patch.object(quota, "main", return_value=0) as quota_main:
+            self.assertEqual(hlink.main(["quota", "claude"]), 0)
+        quota_main.assert_called_once_with(["claude"])
 
     def test_main_defaults_to_all_providers(self):
         with patch.object(quota, "fetch", return_value={"claude": {"ok": True, "windows": []}}) as fetch:
