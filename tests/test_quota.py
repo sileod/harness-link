@@ -85,7 +85,7 @@ for line in sys.stdin:
                             key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
                         ).digest())
                         connection.sendall(b"HTTP/1.1 101 Switching Protocols\r\n"
-                                           b"Sec-WebSocket-Accept: " + accept + b"\r\n\r\n")
+                                           b"sec-websocket-accept: " + accept + b"\r\n\r\n")
                         for _ in range(3):
                             first, second = read_exact(connection, 2)
                             self.assertEqual(first & 0x0F, 1)

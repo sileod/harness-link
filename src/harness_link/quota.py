@@ -314,7 +314,12 @@ def _codex_daemon_app_server():
             expected = base64.b64encode(hashlib.sha1(
                 (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
             ).digest())
-            if not response.startswith(b"HTTP/1.1 101 ") or b"Sec-WebSocket-Accept: " + expected not in response:
+            headers = {}
+            for line in response.split(b"\r\n")[1:]:
+                if b":" in line:
+                    name, value = line.split(b":", 1)
+                    headers[name.lower()] = value.strip()
+            if not response.startswith(b"HTTP/1.1 101 ") or headers.get(b"sec-websocket-accept") != expected:
                 raise RuntimeError("Codex daemon rejected websocket handshake")
             send(connection, {
                 "id": "init", "method": "initialize",
