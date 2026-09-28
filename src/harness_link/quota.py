@@ -3,10 +3,12 @@ import json
 import os
 from pathlib import Path
 import platform
+import queue
 import shutil
 import sqlite3
 import subprocess
 import sys
+import threading
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -165,47 +167,69 @@ def _codex_app_server():
     codex = shutil.which("codex")
     if not codex:
         raise RuntimeError("codex is not installed")
-    messages = [
-        {
+    process = subprocess.Popen(
+        [codex, "app-server", "--listen", "stdio://"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+    )
+    replies = queue.Queue()
+
+    def read_replies():
+        for line in process.stdout:
+            try:
+                replies.put(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        replies.put(None)
+
+    threading.Thread(target=read_replies, daemon=True).start()
+
+    def send(message):
+        process.stdin.write(json.dumps(message) + "\n")
+        process.stdin.flush()
+
+    def receive(message_id):
+        while True:
+            try:
+                message = replies.get(timeout=12)
+            except queue.Empty:
+                raise RuntimeError("Codex app-server timed out") from None
+            if message is None:
+                raise RuntimeError("Codex app-server closed before responding")
+            if message.get("id") != message_id:
+                continue
+            if "error" in message:
+                raise RuntimeError(message["error"].get("message", "Codex RPC error"))
+            return message.get("result", {})
+
+    try:
+        send({
             "id": "init",
             "method": "initialize",
             "params": {
                 "clientInfo": {"name": "harness-link", "title": "Harness Link", "version": "0"},
                 "capabilities": {"experimentalApi": True},
             },
-        },
-        {"method": "initialized"},
-        {
-            "id": "quota",
-            "method": "account/rateLimits/read",
-            "params": {"excludeResetCreditDetails": True},
-        },
-    ]
-    try:
-        result = subprocess.run(
-            [codex, "app-server", "--listen", "stdio://"],
-            input="\n".join(map(json.dumps, messages)) + "\n",
-            capture_output=True,
-            text=True,
-            timeout=12,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout or ""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode(errors="replace")
-    else:
-        stdout = result.stdout
-
-    for line in stdout.splitlines():
+        })
+        receive("init")
+        send({"method": "initialized"})
+        send({"id": "quota", "method": "account/rateLimits/read", "params": {}})
+        return receive("quota")
+    finally:
         try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if msg.get("id") == "quota":
-            if "error" in msg:
-                raise RuntimeError(msg["error"].get("message", "Codex RPC error"))
-            return msg.get("result", {})
-    raise RuntimeError("Codex app-server returned no rate-limit response")
+            process.stdin.close()
+        except OSError:
+            pass
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        process.stdout.close()
 
 
 def quota_codex():

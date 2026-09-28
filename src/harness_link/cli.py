@@ -7,12 +7,14 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
 
 from . import __version__
 from .providers import PROVIDERS, Provider, fetch_free_models, require_key, resolve_model
+from .routing import ROUTE_PREFIX, route_id, route_status_path, show_route_status, write_route_status
 
 
 MODEL_COMMANDS = {"opencode", "hermes", "codex", "claude", "mini"}
@@ -182,18 +184,16 @@ def litellm_config(
     model: str,
     fallback: Provider = None,
     fallback_model: str = None,
+    route_callback: bool = False,
 ) -> str:
+    settings = "litellm_settings:\n  drop_params: true\n"
+    if route_callback:
+        settings += "  callbacks: route_callback.proxy_handler_instance\n"
     if fallback is None:
-        return (
-            "litellm_settings:\n"
-            "  drop_params: true\n"
-            "model_list:\n"
-            + _litellm_model_entry(model, provider, model)
-        )
+        return settings + "model_list:\n" + _litellm_model_entry(model, provider, model)
     return (
-        "litellm_settings:\n"
-        "  drop_params: true\n"
-        "router_settings:\n"
+        settings
+        + "router_settings:\n"
         "  num_retries: 0\n"
         "  fallbacks:\n"
         f"    - {json.dumps(FALLBACK_PRIMARY_MODEL)}: [{json.dumps(FALLBACK_SECONDARY_MODEL)}]\n"
@@ -231,12 +231,48 @@ def wait_for_bridge(provider: Provider, process, port: int, timeout=None):
     die(provider, f"LiteLLM bridge did not become HTTP-ready; set {provider.debug_env}=1 for logs")
 
 
+def _bridge_route_resolver(provider, model, fallback=None, fallback_model=None):
+    entries = [(provider, model, FALLBACK_PRIMARY_MODEL)]
+    if fallback is not None:
+        entries.append((fallback, fallback_model, FALLBACK_SECONDARY_MODEL))
+
+    def resolve(model_name, api_base):
+        base = api_base.rstrip("/")
+        if base:
+            for candidate, candidate_model, _alias in entries:
+                if candidate.base_url == base:
+                    return route_id(candidate, candidate_model)
+        normalized = model_name.removeprefix("openai/")
+        for candidate, candidate_model, alias in entries:
+            if model_name == alias or normalized == candidate_model:
+                return route_id(candidate, candidate_model)
+        return model_name
+
+    return resolve
+
+
+def _read_bridge_output(stream, target, debug, resolve_route, status_path, primary_route, show_routing, state, lock):
+    for line in stream:
+        if line.startswith(ROUTE_PREFIX):
+            model_name, _separator, api_base = line[len(ROUTE_PREFIX) :].rstrip("\n").partition("\t")
+            route = resolve_route(model_name, api_base)
+            payload = write_route_status(status_path, route, primary_route)
+            with lock:
+                if show_routing and state[0] != route:
+                    label = "fallback" if payload["fallback"] else "primary"
+                    print(f"[hlink] {label} -> {route}", file=sys.stderr, flush=True)
+                state[0] = route
+        elif debug:
+            print(line, end="", file=target, flush=True)
+
+
 def run_with_bridge(
     provider: Provider,
     model: str,
     callback,
     fallback: Provider = None,
     fallback_model: str = None,
+    show_routing: bool = False,
 ):
     provider_key(provider)
     if fallback is not None:
@@ -247,21 +283,53 @@ def run_with_bridge(
         "Install the bridge with `python -m pip install 'litellm[proxy]'`.",
     )
     port = free_port()
+    primary_route = route_id(provider, model)
+    status_path = route_status_path(provider)
+    resolve_route = _bridge_route_resolver(provider, model, fallback, fallback_model)
     with tempfile.TemporaryDirectory(prefix=f"harness-link-{provider.slug}-") as tmp:
         config_path = Path(tmp) / "litellm.yaml"
         config_path.write_text(
-            litellm_config(provider, model, fallback=fallback, fallback_model=fallback_model),
+            litellm_config(
+                provider,
+                model,
+                fallback=fallback,
+                fallback_model=fallback_model,
+                route_callback=True,
+            ),
+            encoding="utf-8",
+        )
+        callback_path = Path(tmp) / "route_callback.py"
+        callback_path.write_text(
+            Path(__file__).with_name("route_callback.py").read_text(encoding="utf-8"),
             encoding="utf-8",
         )
         debug = os.environ.get(provider.debug_env) == "1"
-        stdio = {} if debug else {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
         bridge_env = os.environ.copy()
         bridge_env["LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES"] = "true"
         process = subprocess.Popen(
             [litellm, "--config", str(config_path), "--host", "127.0.0.1", "--port", str(port)],
             env=bridge_env,
-            **stdio,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
         )
+        state = [None]
+        lock = threading.Lock()
+        readers = [
+            threading.Thread(
+                target=_read_bridge_output,
+                args=(process.stdout, sys.stdout, debug, resolve_route, status_path, primary_route, show_routing, state, lock),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=_read_bridge_output,
+                args=(process.stderr, sys.stderr, debug, resolve_route, status_path, primary_route, show_routing, state, lock),
+                daemon=True,
+            ),
+        ]
+        for reader in readers:
+            reader.start()
         routed_model = FALLBACK_PRIMARY_MODEL if fallback is not None else model
         try:
             wait_for_bridge(provider, process, port)
@@ -274,6 +342,8 @@ def run_with_bridge(
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
+            for reader in readers:
+                reader.join(timeout=0.5)
 
 
 def _codex_provider_config(provider: Provider, base_url: str, env_key: str) -> str:
@@ -320,7 +390,7 @@ def cmd_codex(provider: Provider, args):
         ]
         return subprocess.call(command, env=env)
 
-    raise SystemExit(run_with_bridge(provider, args.model, launch))
+    raise SystemExit(run_with_bridge(provider, args.model, launch, show_routing=args.show_routing))
 
 
 def _claude_env(provider: Provider, model: str, base_url: str, token: str):
@@ -355,7 +425,7 @@ def cmd_claude(provider: Provider, args):
 
     if provider.claude_experimental:
         print(f"{provider.slug}: Claude Code bridge is experimental", file=sys.stderr)
-    raise SystemExit(run_with_bridge(provider, args.model, launch))
+    raise SystemExit(run_with_bridge(provider, args.model, launch, show_routing=args.show_routing))
 
 
 def _fallback_proxy_provider(provider: Provider, fallback: Provider, port: int) -> Provider:
@@ -408,6 +478,7 @@ def run_with_fallback(provider: Provider, args):
         launch,
         fallback=fallback,
         fallback_model=fallback_model,
+        show_routing=args.show_routing,
     )
 
 
@@ -441,6 +512,10 @@ def cmd_models(provider: Provider, _args):
     for model in models:
         if isinstance(model, dict) and model.get("id"):
             print(model["id"])
+
+
+def cmd_status(provider: Provider, _args):
+    show_route_status(provider.slug)
 
 
 def cmd_spawn(provider: Provider, args):
@@ -479,10 +554,14 @@ def parser(provider: Provider):
         command = sub.add_parser(name, help=help_text)
         command.add_argument("-m", "--model", default=None)
         command.add_argument("--fallback", choices=tuple(PROVIDERS), default=None)
+        command.add_argument("--show-routing", action="store_true", help="show the actual routed model when it changes")
         command.set_defaults(func=handler)
 
     models = sub.add_parser("models", help=f"List model IDs returned by {provider.name}")
     models.set_defaults(func=cmd_models)
+
+    status = sub.add_parser("status", help="Show the last model selected by a local routing bridge")
+    status.set_defaults(func=cmd_status)
 
     spawn = sub.add_parser("spawn", help="Run an agent through the Spawn execution backend")
     spawn.set_defaults(func=cmd_spawn)
@@ -501,7 +580,7 @@ def main(argv=None):
     provider = PROVIDERS[argv.pop(0)]
     root = parser(provider)
     args, rest = root.parse_known_args(argv)
-    if args.command == "models" and rest:
+    if args.command in {"models", "status"} and rest:
         root.error(f"unrecognized arguments: {' '.join(rest)}")
     args.harness_args = rest[1:] if rest[:1] == ["--"] else rest
     if args.command in MODEL_COMMANDS:
@@ -515,6 +594,11 @@ def main(argv=None):
         if args.fallback:
             run_with_fallback(provider, args)
             return
+        direct = args.command in {"opencode", "hermes", "mini"}
+        direct |= args.command == "codex" and provider.direct_responses
+        direct |= args.command == "claude" and provider.direct_messages
+        if args.show_routing and direct:
+            print(f"[hlink] direct -> {route_id(provider, args.model)}", file=sys.stderr)
     args.func(provider, args)
 
 

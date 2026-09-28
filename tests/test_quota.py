@@ -1,5 +1,7 @@
 import io
 import json
+import subprocess
+import sys
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -28,6 +30,27 @@ class QuotaTests(TestCase):
         )
         self.assertEqual([row["remaining"] for row in windows], [88, 56])
         self.assertEqual([row["name"] for row in windows], ["5h", "7d"])
+
+    def test_codex_app_server_waits_for_rate_limit_response(self):
+        server = '''
+import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get("method") == "initialize":
+        print(json.dumps({"id": "init", "result": {}}), flush=True)
+    elif message.get("method") == "account/rateLimits/read":
+        print(json.dumps({"id": "quota", "result": {"rateLimits": {"primary": {"usedPercent": 25}}}}), flush=True)
+'''
+        popen = subprocess.Popen
+
+        def fake_popen(_command, **kwargs):
+            return popen([sys.executable, "-u", "-c", server], **kwargs)
+
+        with patch.object(quota.shutil, "which", return_value="codex"), patch.object(
+            quota.subprocess, "Popen", side_effect=fake_popen
+        ):
+            result = quota._codex_app_server()
+        self.assertEqual(result["rateLimits"]["primary"]["usedPercent"], 25)
 
     def test_agy_windows_accept_snake_case(self):
         windows = quota._normalize_agy(

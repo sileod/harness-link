@@ -24,7 +24,7 @@ for name in harness-link hlink harness-link-spawn albert albert-spawn nim nim-sp
   mv "$tmp_dir/$name" "$install_dir/$name"
 done
 
-for module in __init__.py credentials.py providers.py cli.py hlink.py spawn.py; do
+for module in __init__.py credentials.py providers.py cli.py hlink.py routing.py route_callback.py spawn.py; do
   curl -fsSL "$raw_root/src/harness_link/$module" -o "$tmp_dir/$module"
   mv "$tmp_dir/$module" "$install_dir/harness_link/$module"
 done
