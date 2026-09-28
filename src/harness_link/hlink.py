@@ -113,6 +113,10 @@ def run_provider(provider, harness, model, args, fallback=None):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "quota":
+        from . import quota
+
+        return quota.main(argv[1:])
     normalized, extra_args = split_argv(argv)
     args = parser().parse_args(normalized)
     harness = canonical_harness(args.harness)
