@@ -28,7 +28,7 @@ def parser():
         description="Run coding harnesses through one thin command-line interface",
     )
     root.add_argument("--version", action="version", version=f"hlink {__version__}")
-    root.add_argument("harness", choices=[*HARNESS_NAMES, *ALIASES])
+    root.add_argument("harness", choices=[*HARNESS_NAMES, *ALIASES, "quota"])
     root.add_argument("-p", "--prompt", help='run one task and exit; use "-" to read stdin')
     root.add_argument("-m", "--model", help="override model")
     root.add_argument("-y", "--yolo", action="store_true", help="use the harness native unattended mode")

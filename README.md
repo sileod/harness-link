@@ -74,7 +74,7 @@ orfree mini
 
 ## Quota
 
-`hlink quota` reports the remaining subscription quota exposed by the installed harnesses, reusing their existing local authentication.
+`hlink quota` shows a boxed summary of the remaining subscription quota exposed by the installed harnesses, reusing their existing local authentication. Use `--json` for machine-readable output.
 
 ```sh
 hlink quota

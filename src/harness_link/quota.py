@@ -444,25 +444,26 @@ def _fmt_remaining(value):
 
 
 def print_human(results, out=None):
-    out = out or sys.stdout
-    width = max((len(name) for name in results), default=0)
+    out = sys.stdout if out is None else out
+    lines = ["Quota"]
     for provider, result in results.items():
+        lines.append(provider)
         if not result.get("ok"):
-            print(f"{provider:<{width}}  unavailable  {result.get('error', 'unknown error')}", file=out)
+            lines.append(f"  unavailable: {result.get('error', 'unknown error')}")
             continue
         windows = result.get("windows", [])
         if not windows:
-            print(f"{provider:<{width}}  no quota windows", file=out)
+            lines.append("  no quota windows")
             continue
-        first = True
         for row in windows:
-            prefix = provider if first else ""
             reset = f"  resets {row['reset_at']}" if row.get("reset_at") else ""
-            print(
-                f"{prefix:<{width}}  {row['name']:<28} {_fmt_remaining(row['remaining']):>6} left{reset}",
-                file=out,
-            )
-            first = False
+            lines.append(f"  {row['name']}: {_fmt_remaining(row['remaining'])} left{reset}")
+    width = max(map(len, lines))
+    border = "+" + "-" * (width + 2) + "+"
+    print(border, file=out)
+    for line in lines:
+        print(f"| {line:<{width}} |", file=out)
+    print(border, file=out)
 
 
 def parser():

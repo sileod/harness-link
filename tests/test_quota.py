@@ -1,4 +1,5 @@
 import io
+import json
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -79,6 +80,18 @@ class QuotaTests(TestCase):
         text = out.getvalue()
         self.assertIn("73% left", text)
         self.assertIn("not logged in", text)
+        self.assertIn("| claude", text)
+        self.assertIn("| codex", text)
+        lines = text.splitlines()
+        self.assertEqual(lines[0], lines[-1])
+        self.assertTrue(all(len(line) == len(lines[0]) for line in lines))
+
+    def test_json_output_stays_unboxed(self):
+        out = io.StringIO()
+        results = {"claude": {"ok": True, "windows": [{"name": "5h", "remaining": 73}]}}
+        with patch.object(quota, "fetch", return_value=results), patch("sys.stdout", out):
+            self.assertEqual(quota.main(["claude", "--json"]), 0)
+        self.assertEqual(json.loads(out.getvalue()), results)
 
     def test_hlink_dispatches_quota(self):
         with patch.object(quota, "main", return_value=0) as quota_main:
